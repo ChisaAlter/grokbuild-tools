@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+
+# secrets / local data (never commit)
+accounts.json
+auth.json
+auth.json.bak
+*.log
+.env
