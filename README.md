@@ -3,7 +3,7 @@
 面向 **Grok Build** 的 Windows 多账号桌面小工具：管理多个 SuperGrok / xAI 登录、查看额度进度条、一键切换当前账号。
 
 > 仓库：https://github.com/ChisaAlter/grokbuild-tools  
-> 当前版本：`0.1.0`  
+> 当前版本：`0.2.0`  
 > 非官方工具，与 xAI 无隶属关系。
 
 ---
@@ -39,7 +39,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| **GrokAccountManager-Setup-0.1.0.exe** | 安装程序。完成后从开始菜单或桌面快捷方式启动，**只有图形界面，不弹黑窗口** |
+| **GrokAccountManager-Setup-0.2.0.exe** | 安装程序。完成后从开始菜单或桌面快捷方式启动，**只有图形界面，不弹黑窗口** |
 | **GrokAccountManager-Portable.zip** | 绿色版。解压后双击 `GrokAccountManager.exe` 即可 |
 
 安装包与绿色版均使用 **无控制台窗口** 的打包方式（PyInstaller `--windowed`）。
@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 
 产出：
 
-- `dist\GrokAccountManager-Setup-0.1.0.exe` — 安装包  
+- `dist\GrokAccountManager-Setup-0.2.0.exe` — 安装包  
 - `dist\GrokAccountManager-Portable.zip` — 绿色版  
 - `dist\GrokAccountManager\GrokAccountManager.exe` — 纯 GUI 可执行文件
 

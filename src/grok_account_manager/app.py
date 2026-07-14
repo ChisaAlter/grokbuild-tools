@@ -495,9 +495,10 @@ class GrokAccountManagerApp(ctk.CTk):
     def on_add_login(self) -> None:
         if not self._confirm(
             "新增账号（设备码 + 仅无痕）\n\n"
-            "• 禁止 Grok 自带普通浏览器弹窗\n"
-            "• 只开 Edge/Chrome 无痕\n"
-            "• 面板显示验证码，可「再开无痕」\n"
+            "• 只开 Edge/Chrome 无痕，拦截默认浏览器\n"
+            "• 登录成功后仅收录到列表\n"
+            "• 不会自动切换当前号（仍恢复为原来的账号）\n"
+            "• 要用新号请再点「切换为当前」\n"
             "需要本机已安装 Chrome / Edge / Firefox。",
             title="新增账号",
         ):
@@ -590,16 +591,28 @@ class GrokAccountManagerApp(ctk.CTk):
                 self._alert(f"新增失败\n\n{err}")
                 return
             self._selected_id = result.account.id
+            self.refresh_list(keep_selection=True)
             self._set_status(result.message)
+            extra = ""
+            if result.restored_previous:
+                cur = self.auth.current_identity()
+                cur_label = (cur.email if cur else None) or result.previous_user_id or "原账号"
+                extra = (
+                    f"\n\n当前 Grok 登录仍为：{cur_label}\n"
+                    f"（新增不会自动切换；要用新号请选中后点「切换为当前」）"
+                )
+            elif result.is_new and not result.previous_user_id:
+                extra = "\n\n这是当前唯一登录，已作为当前账号。"
             if result.is_new:
                 self._alert(
-                    f"新增成功\n\n{result.account.email or result.account.label}\n已加入左侧列表。"
+                    f"新增成功\n\n{result.account.email or result.account.label}\n"
+                    f"已加入左侧列表。{extra}"
                 )
             else:
                 self._alert(
                     f"登录完成（未新增行）\n\n"
                     f"{result.account.email or result.account.label}\n"
-                    f"该邮箱已在列表中，已更新凭证。"
+                    f"该邮箱已在列表中，已更新凭证。{extra}"
                 )
 
         self._set_status("准备设备码无痕登录…")
@@ -667,6 +680,53 @@ class GrokAccountManagerApp(ctk.CTk):
         self._set_status("正在切换…")
         self._run_bg(work, done)
 
+    def _detect_current_login(self, *, sync_vault: bool = True) -> dict:
+        """
+        Read ~/.grok/auth.json and match against the vault.
+
+        Returns keys:
+          identity, account, user_id, label, in_list, matched_id
+        """
+        cur = self.auth.current_identity()
+        out: dict = {
+            "identity": cur,
+            "account": None,
+            "user_id": cur.user_id if cur else None,
+            "label": None,
+            "in_list": False,
+            "matched_id": None,
+        }
+        if not cur or not cur.user_id:
+            return out
+
+        matched = self.store.get_by_user_id(cur.user_id)
+        if matched:
+            out["account"] = matched
+            out["in_list"] = True
+            out["matched_id"] = matched.id
+            out["label"] = matched.email or matched.label or cur.email or cur.user_id
+            if sync_vault:
+                # Keep vault tokens in sync with whatever Grok is actually using
+                try:
+                    self.auth.capture_current(self.store, record_active=False, source="refresh")
+                    matched = self.store.get_by_user_id(cur.user_id) or matched
+                    out["account"] = matched
+                    out["label"] = matched.email or matched.label or out["label"]
+                except Exception:
+                    pass
+        else:
+            out["label"] = cur.email or cur.user_id
+        return out
+
+    @staticmethod
+    def _format_current_suffix(info: dict) -> str:
+        if not info.get("user_id"):
+            return " · 当前: （未登录 / 无 auth.json）"
+        label = info.get("label") or info.get("user_id")
+        if info.get("in_list"):
+            return f" · 当前: {label}"
+        return f" · 当前: {label}（未收录到列表）"
+
     def on_refresh_one_quota(self) -> None:
         if not self._selected_id:
             return
@@ -674,10 +734,22 @@ class GrokAccountManagerApp(ctk.CTk):
 
         def work():
             self.store.load()
+            current = self._detect_current_login(sync_vault=True)
             acc = self.store.get(aid)
             if not acc:
                 raise KeyError("账号不存在")
-            return self.quota.probe_account(self.store, acc)
+            info = self.quota.probe_account(self.store, acc)
+            # Re-read after probe (token refresh may not change identity)
+            current = self._detect_current_login(sync_vault=False) or current
+            is_selected_current = bool(
+                current.get("user_id") and acc.user_id == current.get("user_id")
+            )
+            return {
+                "quota": info,
+                "current": current,
+                "is_selected_current": is_selected_current,
+                "account_id": aid,
+            }
 
         def done(result, err):
             if err:
@@ -685,19 +757,30 @@ class GrokAccountManagerApp(ctk.CTk):
                 return
             if not result:
                 return
-            acc = self.store.get(aid)
+            q = result.get("quota")
+            current = result.get("current") or {}
+            acc = self.store.get(result.get("account_id") or aid)
             name = (acc.email or acc.label) if acc else ""
-            rem = result.remaining_percent()
-            if result.chat_ok is True:
-                self._set_status(
-                    f"{name}: 对话✓ · 剩余 {rem:.0f}%" if rem is not None else f"{name}: 对话✓"
-                )
-            elif result.chat_ok is False:
-                self._set_status(f"{name}: 额度已刷新，对话 403")
+            rem = q.remaining_percent() if q else None
+            cur_bit = self._format_current_suffix(current)
+            if result.get("is_selected_current"):
+                role = "（即当前号）"
             else:
-                self._set_status(f"{name}: 额度已刷新")
+                role = "（非当前号）"
+            if q and q.chat_ok is True:
+                base = (
+                    f"{name}{role}: 对话✓ · 剩余 {rem:.0f}%"
+                    if rem is not None
+                    else f"{name}{role}: 对话✓"
+                )
+            elif q and q.chat_ok is False:
+                base = f"{name}{role}: 额度已刷新，对话 403"
+            else:
+                base = f"{name}{role}: 额度已刷新"
+            self._set_status(base + cur_bit)
+            self.refresh_list(keep_selection=True)
 
-        self._set_status("刷新额度中…")
+        self._set_status("刷新额度中（同时识别当前账号）…")
         self._run_bg(work, done)
 
     def _github_repo_setting(self) -> str | None:
@@ -832,6 +915,8 @@ class GrokAccountManagerApp(ctk.CTk):
     def on_refresh_all_quota(self, silent: bool = False, from_timer: bool = False) -> None:
         def work():
             self.store.load()
+            # Detect who Grok is actually using *before* probing, and sync vault.
+            current = self._detect_current_login(sync_vault=True)
             ok_chat, bad_chat = [], []
             for acc in self.store.list_accounts():
                 name = acc.email or acc.label
@@ -840,7 +925,14 @@ class GrokAccountManagerApp(ctk.CTk):
                     ok_chat.append(name)
                 elif info.chat_ok is False:
                     bad_chat.append(name)
-            return {"ok": ok_chat, "bad": bad_chat, "total": len(self.store.list_accounts())}
+            # Confirm again after probes (disk auth is source of truth)
+            current = self._detect_current_login(sync_vault=False) or current
+            return {
+                "ok": ok_chat,
+                "bad": bad_chat,
+                "total": len(self.store.list_accounts()),
+                "current": current,
+            }
 
         def done(result, err):
             if err:
@@ -851,13 +943,20 @@ class GrokAccountManagerApp(ctk.CTk):
                 return
             ok = result.get("ok") or []
             bad = result.get("bad") or []
+            current = result.get("current") or {}
             prefix = "定时刷新" if from_timer else "额度已刷新"
             self._set_status(
                 f"{prefix}: {len(ok)}/{result.get('total', 0)} 对话可用"
                 + (f" · {len(bad)} 个 403" if bad else "")
+                + self._format_current_suffix(current)
             )
+            self.refresh_list(keep_selection=True)
 
-        self._set_status("定时刷新额度中…" if from_timer else "正在刷新全部额度…")
+        self._set_status(
+            "定时刷新额度中（识别当前账号）…"
+            if from_timer
+            else "正在刷新全部额度（并识别当前账号）…"
+        )
         self._run_bg(work, done)
 
     def on_rename(self) -> None:

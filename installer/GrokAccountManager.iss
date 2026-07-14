@@ -3,7 +3,7 @@
 ; Requires: dist\GrokAccountManager\ from PyInstaller first
 
 #define MyAppName "Grok Account Manager"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "ChisaAlter"
 #define MyAppURL "https://github.com/ChisaAlter/grokbuild-tools"
 #define MyAppExeName "GrokAccountManager.exe"

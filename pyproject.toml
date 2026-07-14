@@ -1,6 +1,6 @@
 [project]
 name = "grok-account-manager"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-account manager for Grok Build: capture, quota, token stats, one-click switch"
 requires-python = ">=3.11"
 dependencies = [

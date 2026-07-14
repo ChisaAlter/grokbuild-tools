@@ -1,11 +1,17 @@
 import json
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from grok_account_manager.auth_bridge import AuthBridge
 from grok_account_manager.login_flow import run_login_and_capture
 from grok_account_manager.paths import AppPaths
 from grok_account_manager.store import AccountStore
+
+
+@contextmanager
+def _null_gate():
+    yield
 
 
 def _auth_blob(user_id: str, email: str, key: str = "tok") -> dict:
@@ -114,6 +120,10 @@ def test_device_auth_adds_new_account(tmp_path: Path, monkeypatch):
         "grok_account_manager.login_flow.make_browser_noop_env",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "grok_account_manager.login_flow.suppress_default_browser_opens",
+        _null_gate,
+    )
 
     result = run_login_and_capture(
         bridge,
@@ -127,6 +137,12 @@ def test_device_auth_adds_new_account(tmp_path: Path, monkeypatch):
     assert result.is_new is True
     assert result.account.user_id == "user-b"
     assert result.account.email == "b@x.com"
+    # New account is vaulted, but previous remains the disk "current"
+    assert result.restored_previous is True
+    assert result.current_user_id == "user-a"
+    cur = bridge.current_identity()
+    assert cur is not None
+    assert cur.user_id == "user-a"
     store.load()
     assert len(store.list_accounts()) == 2
     assert store.get_by_user_id("user-a") is not None
@@ -178,6 +194,10 @@ def test_same_email_is_update_not_new(tmp_path: Path, monkeypatch):
         "grok_account_manager.login_flow.make_browser_noop_env",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "grok_account_manager.login_flow.suppress_default_browser_opens",
+        _null_gate,
+    )
 
     result = run_login_and_capture(
         bridge,
@@ -189,5 +209,12 @@ def test_same_email_is_update_not_new(tmp_path: Path, monkeypatch):
         fresh_browser=True,
     )
     assert result.is_new is False
+    # Same account re-login: stays current, no restore needed
+    assert result.restored_previous is False
+    assert result.same_account is True
+    cur = bridge.current_identity()
+    assert cur is not None
+    assert cur.user_id == "user-a"
+    assert (cur.entry.get("key") or "") == "key-a-refreshed"
     store.load()
     assert len(store.list_accounts()) == 1

@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .auth_bridge import AuthBridge, CurrentIdentity
-from .browser_util import find_private_browser, make_browser_noop_env, open_private_url
+from .browser_util import (
+    find_private_browser,
+    make_browser_noop_env,
+    open_private_url,
+    suppress_default_browser_opens,
+)
 from .models import Account
 from .process import find_grok_executable
 from .store import AccountStore
@@ -37,6 +42,10 @@ class LoginCaptureResult:
     is_new: bool = False
     device_code: str | None = None
     login_url: str | None = None
+    # After add-login we restore the previous auth.json when possible so
+    # "新增" only vaults the account and does NOT silently become current.
+    restored_previous: bool = False
+    current_user_id: str | None = None
 
 
 def _identity_fingerprint(ident: CurrentIdentity | None) -> str | None:
@@ -137,9 +146,11 @@ def run_login_and_capture(
     """
     Device-code login with **only** a private browser we control.
 
-    - `BROWSER` is set to a no-op so `grok login` does not open the normal browser
-    - We open the device URL ourselves in Edge/Chrome/Firefox private mode
-    - Backup/restore auth.json on failure
+    - On Windows, temporarily gate the default-browser ProgId so Grok's
+      `webbrowser` open (which ignores $BROWSER) cannot pop Doubao/normal Chrome.
+    - `$BROWSER` is also set to a no-op for tools that honor it.
+    - We open the device URL ourselves in Edge/Chrome/Firefox private mode.
+    - Backup/restore auth.json on failure.
     """
     def status(msg: str) -> None:
         if on_status:
@@ -156,6 +167,34 @@ def run_login_and_capture(
             except Exception:
                 pass
 
+    # Entire login must stay inside the gate: Grok may open the default browser
+    # as soon as device-auth starts.
+    with suppress_default_browser_opens():
+        return _run_login_and_capture_inner(
+            bridge,
+            store,
+            grok_home=grok_home,
+            timeout_secs=timeout_secs,
+            poll_secs=poll_secs,
+            popen=popen,
+            fresh_browser=fresh_browser,
+            status=status,
+            info=info,
+        )
+
+
+def _run_login_and_capture_inner(
+    bridge: AuthBridge,
+    store: AccountStore,
+    *,
+    grok_home: Path | None,
+    timeout_secs: float,
+    poll_secs: float,
+    popen: Any,
+    fresh_browser: bool,
+    status: StatusCb,
+    info: InfoCb,
+) -> LoginCaptureResult:
     previous_user_id = preserve_current_if_needed(bridge, store)
     before = bridge.current_identity()
     before_user = before.user_id if before else None
@@ -197,12 +236,11 @@ def run_login_and_capture(
         )
 
     status("已保存当前账号，正在 logout…")
-    # noop env even for logout (harmless)
     noop_env = make_browser_noop_env()
     _run_grok(exe, ["logout"], timeout=30.0, popen=popen, env=noop_env)
     time.sleep(0.3)
 
-    status("启动设备码登录…（已禁用 Grok 自带弹窗）")
+    status("启动设备码登录…（已拦截默认浏览器，仅开无痕）")
     proc = popen(
         [str(exe), "login", "--device-auth"],
         cwd=str(Path.home()),
@@ -212,7 +250,7 @@ def run_login_and_capture(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env=noop_env,  # critical: swallow grok's default browser open
+        env=noop_env,
     )
 
     parsed: dict[str, str | None] = {"login_url": None, "device_code": None}
@@ -232,7 +270,8 @@ def run_login_and_capture(
             if ok:
                 opened_private = True
                 info(
-                    f"已打开无痕窗口（{detail}）。验证码: {code or '见窗口'}。请只在这个窗口登录新账号。",
+                    f"已打开无痕窗口（{detail}）。验证码: {code or '见窗口'}。"
+                    f"请只在这个无痕窗口登录新账号（默认浏览器已拦截）。",
                     url,
                     code,
                 )
@@ -317,11 +356,18 @@ def run_login_and_capture(
             + (f"输出: {out[-350:]}" if out else "")
         )
 
+    # "新增" should vault the new login only. If another account was current
+    # before, restore it so the UI/Grok "当前" does not silently jump to the
+    # newly logged-in account (that requires explicit 「切换为当前」).
+    will_restore_previous = bool(
+        before_user and login_ident.user_id and login_ident.user_id != before_user
+    )
+
     try:
-        # Record as active only for intentional new/device login (source=login)
         account = bridge.capture_current(
             store,
-            record_active=True,
+            # Only mark active for usage when this login remains the disk current.
+            record_active=not will_restore_previous,
             source="login",
         )
     except Exception as e:
@@ -333,6 +379,29 @@ def run_login_and_capture(
     is_new = account.user_id not in known_ids
     same = bool(before_user and account.user_id == before_user)
 
+    restored_previous = False
+    if will_restore_previous:
+        restored_previous = _restore_previous_current(
+            bridge,
+            store,
+            previous_user_id=before_user,
+            backup_path=backup_path,
+            status=status,
+        )
+        if not restored_previous:
+            # Fallback to pre-login auth.json snapshot
+            restore_backup()
+            cur_after = bridge.current_identity()
+            restored_previous = bool(
+                cur_after and cur_after.user_id == before_user
+            )
+            if restored_previous:
+                status("已用登录前备份恢复原先当前账号")
+
+    store.load()
+    cur_now = bridge.current_identity()
+    current_uid = cur_now.user_id if cur_now else None
+
     if is_new:
         msg = f"已新增账号: {account.email or account.label}"
     elif same:
@@ -340,6 +409,12 @@ def run_login_and_capture(
     else:
         msg = f"已收录/更新: {account.email or account.label}"
 
+    if restored_previous and before_user:
+        prev = store.get_by_user_id(before_user)
+        prev_label = (prev.email or prev.label) if prev else before_user
+        msg += f" · 当前仍为 {prev_label}（未自动切换）"
+    elif same or not before_user:
+        msg += " · 已是当前登录"
     if opened_private:
         msg += " · 无痕"
     if not opened_private and fresh_browser:
@@ -356,4 +431,44 @@ def run_login_and_capture(
         is_new=is_new,
         device_code=parsed.get("device_code"),
         login_url=parsed.get("login_url"),
+        restored_previous=restored_previous,
+        current_user_id=current_uid,
     )
+
+
+def _restore_previous_current(
+    bridge: AuthBridge,
+    store: AccountStore,
+    *,
+    previous_user_id: str,
+    backup_path: Path,
+    status: StatusCb,
+) -> bool:
+    """
+    Put the account that was current before add-login back into auth.json.
+    Prefer the vault snapshot (captured at start); fall back to auth.pre-login.bak.
+    """
+    status("新增完成，正在恢复原先的当前账号（未自动切换）…")
+    prev = store.get_by_user_id(previous_user_id)
+    if prev and prev.auth_entry:
+        try:
+            auth_key = prev.auth_key or bridge._default_auth_key(prev)
+            payload = {auth_key: dict(prev.auth_entry)}
+            bridge.write_auth(payload)
+            # Brief hold: login/logout side-effects may race the write
+            bridge._hold_auth(payload, previous_user_id, 2.0)
+            cur = bridge.current_identity()
+            if cur and cur.user_id == previous_user_id:
+                return True
+        except Exception:
+            pass
+
+    if backup_path.exists():
+        try:
+            shutil.copy2(backup_path, bridge.paths.auth_json)
+            cur = bridge.current_identity()
+            if cur and cur.user_id == previous_user_id:
+                return True
+        except OSError:
+            pass
+    return False
