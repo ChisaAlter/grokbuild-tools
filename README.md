@@ -27,13 +27,24 @@
 ## 环境要求
 
 - Windows 10/11（主要支持平台）
-- Python 3.11+
 - 已安装 [Grok Build](https://docs.x.ai) CLI（默认 `~\.grok\bin\grok.exe`）
 - 新增登录需要本机 **Chrome / Edge / Firefox**（用于无痕窗口）
+- 源码运行时另需 Python 3.11+
 
 ---
 
-## 安装
+## 安装（推荐：安装包，只有 GUI）
+
+从 [Releases](https://github.com/ChisaAlter/grokbuild-tools/releases) 下载：
+
+| 文件 | 说明 |
+|------|------|
+| **GrokAccountManager-Setup-0.1.0.exe** | 安装程序。完成后从开始菜单或桌面快捷方式启动，**只有图形界面，不弹黑窗口** |
+| **GrokAccountManager-Portable.zip** | 绿色版。解压后双击 `GrokAccountManager.exe` 即可 |
+
+安装包与绿色版均使用 **无控制台窗口** 的打包方式（PyInstaller `--windowed`）。
+
+### 从源码安装（开发 / 调试）
 
 ```powershell
 git clone https://github.com/ChisaAlter/grokbuild-tools.git
@@ -44,23 +55,28 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
----
+**源码运行（无黑色终端）：** 双击 `start.vbs` 或 `启动.bat`（内部 `pythonw.exe`）。
 
-## 运行
-
-**推荐（无黑色终端窗口）：**
-
-- 双击 **`start.vbs`**，或  
-- 双击 **`启动.bat`**
-
-内部使用 `pythonw.exe`，不会跟着一个 PowerShell/CMD 窗口。
-
-开发调试时才用带终端的方式：
+调试时用带终端的方式：
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m grok_account_manager
 ```
+
+### 自行打包 Windows 安装包
+
+需安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)，然后：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+```
+
+产出：
+
+- `dist\GrokAccountManager-Setup-0.1.0.exe` — 安装包  
+- `dist\GrokAccountManager-Portable.zip` — 绿色版  
+- `dist\GrokAccountManager\GrokAccountManager.exe` — 纯 GUI 可执行文件
 
 ---
 
