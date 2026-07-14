@@ -1,24 +1,50 @@
 # Grok Account Manager
 
-桌面工具：管理多个 SuperGrok / xAI 账号，查看额度与 Token 累计消耗，一键切换 Grok Build 登录。
+面向 **Grok Build** 的 Windows 多账号桌面小工具：管理多个 SuperGrok / xAI 登录、查看额度进度条、一键切换当前账号。
 
-## 功能
+> 仓库：https://github.com/ChisaAlter/grokbuild-tools  
+> 当前版本：`0.1.0`  
+> 非官方工具，与 xAI 无隶属关系。
 
-- **收录**：从当前 `~/.grok/auth.json` 抓取账号到本地仓库
-- **额度**：用账号 token 探测 API rate-limit（请求/Token 剩余与上限、tier）
-- **Token 统计**：按账号汇总会话 `updates.jsonl` 中的用量（输入/输出/总计等）
-- **一键切换**：只改写 `~/.grok/auth.json`，**不改** `sessions/`、`config.toml` 等
-- **自动重启**：切换后尽量结束并重新启动 `grok`
+---
+
+## 功能一览
+
+| 功能 | 说明 |
+|------|------|
+| 收录账号 | 从当前 `~/.grok/auth.json` 抓取登录信息到本地仓库 |
+| 新增登录 | 设备码 + **仅无痕浏览器**登录新账号并自动收录 |
+| 一键切换 | 写入目标账号凭证，结束旧 Grok 进程，并用 `grok --continue` 尽量续上原项目最近会话 |
+| 额度进度条 | 列表下方显示**剩余额度**比例与百分比（来自 billing 接口） |
+| 对话探测 | 刷新额度时检测 Build 对话接口是否可用（✓ / ✗） |
+| 定时刷新 | 顶部开关 + 间隔（分钟），自动刷新全部账号额度 |
+| 在线更新 | 检查 GitHub Release/Tag，支持 git 或 zip 在线更新 |
+
+**不会修改** Grok 的会话历史目录与 `config.toml`（只动 `auth.json` 及本工具自己的数据目录）。
+
+---
+
+## 环境要求
+
+- Windows 10/11（主要支持平台）
+- Python 3.11+
+- 已安装 [Grok Build](https://docs.x.ai) CLI（默认 `~\.grok\bin\grok.exe`）
+- 新增登录需要本机 **Chrome / Edge / Firefox**（用于无痕窗口）
+
+---
 
 ## 安装
 
 ```powershell
-cd C:\Ai\grokbuild-tools
+git clone https://github.com/ChisaAlter/grokbuild-tools.git
+cd grokbuild-tools
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -e .
 ```
+
+---
 
 ## 运行
 
@@ -28,40 +54,132 @@ python -m grok_account_manager
 grok-account-manager
 ```
 
-## 使用流程
+---
 
-1. 在 Grok Build 登录账号 A → 打开本工具 → **收录当前 Grok 登录**
-2. 在 Grok 中 `grok login` 换账号 B → 再点收录
-3. 选中账号 → **刷新额度** / **同步统计**
-4. **切换为当前** → 工具写入 `auth.json` 并尝试重启 Grok
+## 使用说明
+
+### 1. 收录已有登录
+
+1. 先在本机正常登录 Grok Build  
+2. 打开本工具 → 点 **「收录当前 Grok 登录」**  
+3. 账号出现在左侧列表  
+
+### 2. 新增账号（推荐无痕设备码）
+
+1. 点 **「新增（登录）」**  
+2. 工具会：保存当前号 → 本地 logout → 启动设备码登录  
+3. **只在无痕窗口**用新邮箱完成登录（忽略普通浏览器旧登录态）  
+4. 成功后左侧应出现新账号（同一邮箱只会更新凭证，不重复加行）  
+
+### 3. 查看额度
+
+- 列表每项下方有**进度条** = **剩余比例**  
+- 文案示例：`剩余 14,255/15,000 (95%) · 已用 5%`  
+- 点 **刷新全部额度** 或单个 **刷新额度**  
+- 可打开顶部 **定时刷新**，填写间隔分钟数  
+
+### 4. 切换账号
+
+1. 选中目标账号 → **切换为当前**  
+2. 工具会结束当前 Grok → 写入 `auth.json` → 在原项目目录尽量 `grok --continue`  
+3. 请使用**新开的 Grok 窗口**继续对话  
+4. 会话文件在 `~\.grok\sessions\`，不会因切换被删除；接不上时可用 `/resume`  
+
+### 5. 检查更新
+
+- 顶栏显示版本号，点 **检查更新**  
+- 默认检查仓库：`ChisaAlter/grokbuild-tools`  
+- 有新版本可一键更新（git 优先，否则下载 zip），完成后尝试重启应用  
+
+---
 
 ## 数据位置
 
 | 路径 | 说明 |
 |------|------|
-| `%USERPROFILE%\.grok-account-manager\accounts.json` | 多账号凭证与统计（**明文**） |
-| `%USERPROFILE%\.grok-account-manager\switch_log.json` | 切换时间线（用于用量归属） |
+| `%USERPROFILE%\.grok-account-manager\accounts.json` | 多账号凭证与缓存（**明文**，勿外传） |
+| `%USERPROFILE%\.grok-account-manager\settings.json` | 定时刷新等设置 |
 | `%USERPROFILE%\.grok\auth.json` | Grok 当前登录（切换时覆盖） |
 | `%USERPROFILE%\.grok\auth.json.bak` | 切换前备份 |
+| `%USERPROFILE%\.grok\sessions\` | 会话历史（本工具不删除） |
 
-## 安全说明
+---
 
-- 本地仓库为**明文 JSON**，请勿分享或提交到 Git。
-- 日志与界面默认不展示完整 token。
-- 切换只动 `auth.json`；会话历史与设置保持原样。
+## 重要说明与限制
 
-## 统计口径
+1. **切换必须重启 Grok 进程**  
+   仅改文件时，运行中的 Grok 常仍用内存里的旧登录，额度会算错号。
 
-- **累计 Token**：来自本机会话日志，按 `switch_log` 归属到账号；工具启用前的历史可能进入「未归属」。
-- **当前额度窗口**：来自 API 响应头，一般是滑动窗口剩余，**不是**终身总配额。
+2. **有额度 / 有 SuperGrok 展示 ≠ 一定能 Build 对话**  
+   个别账号 billing 正常，但 `cli-chat-proxy` 对话接口仍可能 403。以列表「对话✓」和终端实测为准。
 
-## 测试
+3. **refresh_token 可能失效**  
+   久置或多次登录后需重新「新增/收录」更新凭证。
+
+4. **本工具非官方**  
+   依赖未公开稳定接口，xAI 变更可能导致部分功能失效。
+
+5. **安全**  
+   本地明文保存 OAuth 凭证，仅建议自用电脑使用。
+
+---
+
+## 常见问题
+
+**Q: 切换后还是旧号额度？**  
+A: 确认用的是切换后新开的 Grok 窗口；旧终端窗口请关掉。
+
+**Q: 新增登录没有多一行？**  
+A: 若登录的是列表里已有邮箱，只会更新凭证。需换另一个邮箱才会新增。
+
+**Q: 无痕闪一下 / 还弹普通浏览器？**  
+A: 请用面板上的「再开无痕窗口」；普通窗直接关掉，以无痕 + 验证码为准。
+
+**Q: 对话 403 但订阅还在？**  
+A: 网页订阅与 Build 对话门禁可能不一致；换「对话✓」的号，或到 console.x.ai 检查该号权益。
+
+---
+
+## 开发与测试
 
 ```powershell
+pip install -r requirements.txt
+pip install -e .
 pytest -q
 ```
 
-## 设计文档
+主要代码：
 
-- Spec: `docs/superpowers/specs/2026-07-14-grok-account-manager-design.md`
-- Plan: `docs/superpowers/plans/2026-07-14-grok-account-manager.md`
+```
+src/grok_account_manager/
+  app.py           # 界面
+  auth_bridge.py   # auth.json 读写与切换
+  quota.py         # 额度 / 对话探测
+  login_flow.py    # 设备码无痕登录
+  process.py       # Grok 进程管理
+  updater.py       # GitHub 版本检测与更新
+  store.py         # 本地仓库
+```
+
+---
+
+## 发布新版本
+
+1. 同步修改：
+   - `src/grok_account_manager/__init__.py` → `__version__`
+   - `pyproject.toml` → `version`
+2. 提交并推送  
+3. 创建 GitHub Release / Tag（例如 `v0.1.1`）  
+4. 用户端点「检查更新」即可拉取  
+
+---
+
+## 许可证
+
+MIT License — 详见 [LICENSE](LICENSE)。
+
+---
+
+## 免责声明
+
+本项目为社区自用工具，与 xAI 无关。使用本工具产生的账号安全、订阅与额度问题由使用者自行承担。请遵守 xAI 服务条款。

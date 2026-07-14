@@ -119,7 +119,21 @@ class AuthBridge:
         )
         return acc
 
-    def capture_current(self, store: AccountStore) -> Account:
+    def capture_current(
+        self,
+        store: AccountStore,
+        *,
+        record_active: bool = False,
+        source: str = "capture",
+    ) -> Account:
+        """
+        Save current auth.json into the vault.
+
+        By default does NOT append switch_log. Only intentional switch / new-login
+        should mark an account "active for usage stats". Otherwise merely
+        capturing/logging-in pollutes the timeline and steals other accounts'
+        session token totals.
+        """
         identity = self.current_identity()
         if not identity:
             raise FileNotFoundError(f"No Grok auth found at {self.paths.auth_json}")
@@ -131,10 +145,10 @@ class AuthBridge:
         account = self.entry_to_account(identity)
         saved = store.upsert(account)
 
-        # Ensure switch_log knows this identity is active as of now
-        store.append_switch(
-            SwitchEntry(user_id=saved.user_id, at_unix=time.time(), source="capture")
-        )
+        if record_active:
+            store.append_switch(
+                SwitchEntry(user_id=saved.user_id, at_unix=time.time(), source=source)
+            )
         return saved
 
     def switch_to(
@@ -143,7 +157,24 @@ class AuthBridge:
         account_id: str,
         *,
         auto_capture_current: bool = True,
-    ) -> Account:
+        sticky_secs: float = 3.0,
+        kill_running_grok: bool = True,
+        restart_grok_after: bool = True,
+        grok_cwd: Path | None = None,
+    ) -> tuple[Account, dict[str, Any]]:
+        """
+        Switch active Grok credentials reliably.
+
+        Hot-reload alone is NOT enough: a live Grok process often keeps the
+        previous OAuth session in memory and keeps billing the old account.
+        Default path:
+          1) snapshot current auth into vault
+          2) kill running grok processes (drop memory)
+          3) write target auth.json
+          4) restart grok in a new console
+        """
+        from .process import kill_grok_processes
+
         target = store.get(account_id)
         if not target:
             raise KeyError(f"Unknown account: {account_id}")
@@ -153,26 +184,136 @@ class AuthBridge:
         if auto_capture_current:
             try:
                 cur = self.current_identity()
-                if cur and cur.user_id and not store.get_by_user_id(cur.user_id):
+                if cur and cur.user_id:
+                    # Snapshot whoever is currently on disk (may be old account still)
                     self.capture_current(store)
             except Exception:
-                # Best-effort auto-capture; switch still proceeds
                 pass
 
-        self.backup_auth()
+        target = store.get(account_id) or target
 
+        # Refresh tokens before install; chat probe is advisory (do NOT hard-block switch).
+        # Earlier hard-block + flaky probe incorrectly rejected valid SuperGrok accounts.
+        chat_ok: bool | None = None
+        chat_err: str | None = None
+        try:
+            from .quota import QuotaProbe
+
+            probe = QuotaProbe()
+            try:
+                fresh_entry = probe.ensure_fresh_token(dict(target.auth_entry), force=True)
+            except Exception:
+                fresh_entry = dict(target.auth_entry)
+            target.auth_entry = fresh_entry
+            store.upsert(target)
+            uid = target.user_id or ""
+            chat_ok, chat_err = probe.probe_chat_access(
+                fresh_entry.get("key") or "", uid
+            )
+            target.quota.chat_ok = chat_ok
+            target.quota.chat_error = chat_err
+            store.upsert(target)
+        except Exception as e:
+            chat_ok = None
+            chat_err = str(e)
+
+        target = store.get(account_id) or target
+        self.backup_auth()
         auth_key = target.auth_key or self._default_auth_key(target)
         payload = {auth_key: dict(target.auth_entry)}
+
+        meta: dict[str, Any] = {
+            "killed_pids": [],
+            "restarted": False,
+            "restart_message": "",
+            "chat_ok": chat_ok,
+            "chat_error": chat_err,
+        }
+
+        # Capture live Grok project dirs before kill (for --continue resume)
+        resume_cwds: list[Path] = []
+        if kill_running_grok:
+            from .process import list_grok_process_info
+
+            for info in list_grok_process_info():
+                if info.cwd and info.cwd.exists():
+                    resume_cwds.append(info.cwd)
+            meta["killed_pids"] = kill_grok_processes(timeout_secs=10.0)
+            time.sleep(0.4)
+        if grok_cwd is None and resume_cwds:
+            grok_cwd = resume_cwds[0]
+        meta["resume_cwds"] = [str(p) for p in resume_cwds]
+
+        self.write_auth({})
+        time.sleep(0.2)
         self.write_auth(payload)
+
+        if sticky_secs > 0:
+            self._hold_auth(payload, target.user_id, sticky_secs)
+
+        cur = self.current_identity()
+        if not cur or cur.user_id != target.user_id:
+            self.write_auth(payload)
+            time.sleep(0.15)
+            cur = self.current_identity()
+            if not cur or cur.user_id != target.user_id:
+                raise RuntimeError(
+                    f"切换写入后 auth.json 仍不是目标账号 "
+                    f"(期望 {target.email or target.user_id}, "
+                    f"实际 {(cur.email if cur else None) or (cur.user_id if cur else '空')})。"
+                )
 
         now = utc_now_iso()
         target.last_used_at = now
         target.updated_at = now
         store.upsert(target)
+        # Only explicit switch marks usage-attribution active
         store.append_switch(
             SwitchEntry(user_id=target.user_id, at_unix=time.time(), source="switch")
         )
-        return target
+
+        if restart_grok_after:
+            from .process import list_grok_process_info, start_grok as _start
+
+            # Prefer cwd of the process we just killed (captured earlier if possible)
+            resume_cwd = grok_cwd
+            if resume_cwd is None:
+                # After kill there is no live process; caller should pass cwd.
+                resume_cwd = None
+
+            ok, path, msg = _start(
+                self.paths.grok_home,
+                cwd=resume_cwd,
+                continue_session=True,
+            )
+            meta["restarted"] = ok
+            meta["restart_message"] = msg
+            meta["launch_path"] = path
+            meta["resume_cwd"] = str(resume_cwd) if resume_cwd else None
+            # Hold again after start — new process may race auth write
+            if sticky_secs > 0:
+                self._hold_auth(payload, target.user_id, min(max(sticky_secs, 2.0), 5.0))
+            cur2 = self.current_identity()
+            if cur2 is None or cur2.user_id != target.user_id:
+                self.write_auth(payload)
+
+        return target, meta
+
+    def _hold_auth(
+        self,
+        payload: dict[str, Any],
+        expected_user_id: str,
+        sticky_secs: float,
+        *,
+        interval: float = 0.6,
+    ) -> None:
+        """Re-write target auth if another process restores a different account."""
+        deadline = time.time() + sticky_secs
+        while time.time() < deadline:
+            cur = self.current_identity()
+            if cur is None or cur.user_id != expected_user_id:
+                self.write_auth(payload)
+            time.sleep(interval)
 
     def _default_auth_key(self, account: Account) -> str:
         # Match observed Grok format: https://auth.x.ai::<client_id>

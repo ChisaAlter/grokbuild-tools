@@ -29,10 +29,11 @@ def test_upsert_rename_delete(tmp_path: Path):
 def test_switch_log_resolve(tmp_path: Path):
     paths = AppPaths.for_test(tmp_path)
     store = AccountStore(paths)
+    # capture must be ignored for attribution
     store.append_switch(SwitchEntry(user_id="a", at_unix=100, source="capture"))
     store.append_switch(SwitchEntry(user_id="b", at_unix=200, source="switch"))
     assert store.resolve_user_at(50) is None
-    assert store.resolve_user_at(100) == "a"
-    assert store.resolve_user_at(150) == "a"
+    assert store.resolve_user_at(100) is None  # capture ignored
+    assert store.resolve_user_at(150) is None
     assert store.resolve_user_at(200) == "b"
     assert store.resolve_user_at(999) == "b"

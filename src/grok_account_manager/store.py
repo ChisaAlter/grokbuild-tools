@@ -156,14 +156,29 @@ class AccountStore:
         return list(self._switch_log)
 
     def resolve_user_at(self, at_unix: float) -> str | None:
-        """Latest switch_log user_id with at_unix <= event time."""
+        """Strict attribution for usage stats.
+
+        Only entries with source in {switch, login} count as "became active".
+        Mere capture/refresh must never steal another account's session totals.
+
+        Returns latest qualifying user_id with at_unix <= event time, else None.
+        """
         chosen: str | None = None
         for entry in self._switch_log:
-            if entry.at_unix <= at_unix:
-                chosen = entry.user_id
-            else:
+            if entry.at_unix > at_unix:
                 break
+            if entry.source in ("switch", "login"):
+                chosen = entry.user_id
         return chosen
+
+    def purge_non_usage_switch_log(self) -> int:
+        """Drop capture/noise entries from switch_log. Returns removed count."""
+        before = len(self._switch_log)
+        self._switch_log = [
+            e for e in self._switch_log if e.source in ("switch", "login")
+        ]
+        self.save_switch_log()
+        return before - len(self._switch_log)
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         return self._settings.get(key, default)

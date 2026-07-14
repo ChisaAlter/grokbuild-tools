@@ -8,6 +8,10 @@ build/
 .mypy_cache/
 .ruff_cache/
 
+# accidental junk
+%SystemDrive%/
+SystemDrive/
+
 # secrets / local data (never commit)
 accounts.json
 auth.json
