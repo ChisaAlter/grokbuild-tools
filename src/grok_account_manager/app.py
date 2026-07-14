@@ -802,19 +802,30 @@ class GrokAccountManagerApp(ctk.CTk):
         self._run_bg(work, done)
 
     def _restart_app(self) -> None:
-        """Relaunch current module and exit."""
+        """Relaunch without attaching a console window (pythonw on Windows)."""
         import subprocess
         import sys
         from pathlib import Path
 
         try:
             root = Path(__file__).resolve().parents[2]
-            subprocess.Popen(
-                [sys.executable, "-m", "grok_account_manager"],
-                cwd=str(root),
-            )
+            exe = Path(sys.executable)
+            # Prefer pythonw.exe so no black terminal sticks around
+            pyw = exe.with_name("pythonw.exe")
+            launcher = str(pyw if pyw.exists() else exe)
+            kwargs = {
+                "cwd": str(root),
+                "close_fds": True,
+            }
+            if sys.platform == "win32":
+                # Detach from any parent console
+                kwargs["creationflags"] = (
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                )
+            subprocess.Popen([launcher, "-m", "grok_account_manager"], **kwargs)
         except Exception as e:
-            self._alert(f"自动重启失败，请手动重新打开应用。\n{e}")
+            self._alert(f"自动重启失败，请手动双击 start.vbs 打开。\n{e}")
             return
         self.destroy()
 

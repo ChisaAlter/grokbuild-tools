@@ -48,10 +48,18 @@ pip install -e .
 
 ## 运行
 
+**推荐（无黑色终端窗口）：**
+
+- 双击 **`start.vbs`**，或  
+- 双击 **`启动.bat`**
+
+内部使用 `pythonw.exe`，不会跟着一个 PowerShell/CMD 窗口。
+
+开发调试时才用带终端的方式：
+
 ```powershell
+.\.venv\Scripts\Activate.ps1
 python -m grok_account_manager
-# 或
-grok-account-manager
 ```
 
 ---
